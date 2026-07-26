@@ -29,9 +29,9 @@ import string
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-DEFAULT_LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
-TICKET_CATEGORY_ID = int(os.getenv("TICKET_CATEGORY_ID"))
-ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID"))
+DEFAULT_LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
+TICKET_CATEGORY_ID = int(os.getenv("TICKET_CATEGORY_ID", "0"))
+ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", "0"))
 YOUR_USER_ID = int(os.getenv("YOUR_USER_ID"))
 OWNER_ID = YOUR_USER_ID
 EXEMPT_ROLE_IDS = [int(x) for x in os.getenv("EXEMPT_ROLE_IDS", "").split(",") if x.strip()]
