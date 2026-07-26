@@ -1,4 +1,4 @@
-﻿import sys, io, json, os, re, html, secrets, time, hashlib, hmac
+import sys, io, json, os, re, html, secrets, time, hashlib, hmac
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 import requests as http_requests
