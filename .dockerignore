@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+.git
+.venv
+node_modules
+*.log
+.env
+dist
+build
+*.egg-info
+bot.log
+bot_err.log
+bot_data.json
+server_url2.txt
+watchdog.log
