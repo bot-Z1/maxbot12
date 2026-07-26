@@ -18,7 +18,8 @@ from log_service import LogColors, LogEmbed, MessageCache, send_log, cleanup_rat
 from protection_engine import (SpamDetector, RaidDetector, AntiNuke, PunishmentManager,
                                 WhitelistManager, PROTECTION_NAMES, PUNISHMENT_CONFIG)
 from message_archive import archive_message
-from db.connection import init_db, close_db
+from db.connection import init_db, close_db, get_session
+from db.models import BotConfig
 from guild_backup import init_db as init_backup_db, save_backup, list_backups, get_backup, backup_stats, delete_backup
 from ticket_characters import TICKET_CATEGORIES, get_category, generate_ai_response
 from quiz import QUIZ_QUESTIONS, get_level, get_badge, save_quiz_score, get_leaderboard, load_quiz_scores
@@ -44,6 +45,9 @@ DATA_FILE = "bot_data.json"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "")
 LINK_REGEX = re.compile(r'(https?://[^\s]+|discord\.gg/[^\s]+|discord\.com/invite/[^\s]+)')
+
+SITE_URL = os.getenv("SITE_URL", "https://maxbot-railway.vercel.app")
+BOT_INVITE_URL = f"https://discord.com/oauth2/authorize?client_id={os.getenv('CLIENT_ID', '1475142485012516944')}&permissions=8&scope=bot%20applications.commands"
 
 TICKET_ROLE_ACCESS = {}
 
@@ -295,6 +299,8 @@ def load_data():
             fingerprints = data.get("fingerprints", {})
             used_tokens = data.get("used_tokens", [])
             boost_config = data.get("boost_config", {})
+            webhook_log_channels.clear()
+            webhook_log_channels.update({int(k): v for k, v in data.get("webhook_log_channels", {}).items()})
     except (FileNotFoundError, json.JSONDecodeError):
         link_blocker_enabled = {}
         log_channels = {}
@@ -325,6 +331,7 @@ def load_data():
         fingerprints = {}
         used_tokens = []
         boost_config = {}
+        webhook_log_channels.clear()
 
 _data_dirty = False
 _last_save_time = 0
@@ -389,7 +396,8 @@ def _do_save_data():
             "hardware_bans": hardware_bans,
             "fingerprints": fingerprints,
             "used_tokens": used_tokens,
-            "boost_config": boost_config
+            "boost_config": boost_config,
+            "webhook_log_channels": {str(k): v for k, v in webhook_log_channels.items()}
         }, f, ensure_ascii=False)
     save_to_github()
 
@@ -8748,7 +8756,8 @@ def _get_ffmpeg_opts(guild_id, seek_to=0):
     before = f"-ss {seek_to} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5" if seek_to else "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
     filt = music_filters.get(guild_id, "off")
     af = music_filter_opts.get(filt, "")
-    opts = f"-vn{f' -af \"{af}\"' if af else ''}"
+    af_arg = f' -af "{af}"' if af else ''
+    opts = f"-vn{af_arg}"
     return {"before_options": before, "options": opts}
 
 def play_next(guild_id, seek_to=0):
@@ -12701,6 +12710,204 @@ async def cleanup_fps(ctx):
     )
     embed.set_footer(text="═══════════════════════════\nMAX BOT • تنظيف البصمات\n═══════════════════════════")
     await ctx.send(embed=embed)
+
+# ════════════════════════════════════════
+# دوال مساعدة لرابط Webhook
+# ════════════════════════════════════════
+
+async def save_webhook_url(url: str):
+    try:
+        async with await get_session() as session:
+            cfg = await session.get(BotConfig, "webhook_url")
+            if cfg:
+                cfg.value = url
+            else:
+                session.add(BotConfig(key="webhook_url", value=url))
+            await session.commit()
+    except Exception as e:
+        print(f"[WEBHOOK DB] Save error: {e}", flush=True)
+
+
+async def delete_webhook_url():
+    try:
+        async with await get_session() as session:
+            cfg = await session.get(BotConfig, "webhook_url")
+            if cfg:
+                await session.delete(cfg)
+                await session.commit()
+    except Exception as e:
+        print(f"[WEBHOOK DB] Delete error: {e}", flush=True)
+
+
+async def get_webhook_url_from_db() -> str:
+    try:
+        async with await get_session() as session:
+            cfg = await session.get(BotConfig, "webhook_url")
+            return cfg.value if cfg else ""
+    except Exception:
+        return ""
+
+
+webhook_log_channels = {}  # {guild_id: {"channel_id": int, "webhook_url": str}}
+
+
+@bot.group(name="لوق_الموقع", aliases=["log_web", "web_log"], invoke_without_command=True)
+@commands.has_permissions(administrator=True)
+async def log_web(ctx):
+    """!لوق الموقع — عرض حالة نظام لوق الموقع"""
+    guild_id = ctx.guild.id
+    config = webhook_log_channels.get(guild_id)
+    if not config:
+        await ctx.send("⚠️ **لم يتم إعداد لوق الموقع بعد.**\nاستخدم `!لوق الموقع setup` لإنشاء القناة.")
+        return
+
+    ch = ctx.guild.get_channel(config["channel_id"])
+    url_from_db = await get_webhook_url_from_db()
+
+    embed = discord.Embed(
+        title="🌐  نظام لوق الموقع",
+        description="حالة نظام ربط الموقع بديسكورد",
+        color=0x5865F2,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="📡  قناة LOG WEB", value=ch.mention if ch else "❌ غير موجودة", inline=True)
+    embed.add_field(name="🔗  Webhook", value="✅ متصل" if url_from_db else "❌ غير متصل", inline=True)
+    embed.add_field(name="📋  الأحداث", value="✅ معلومات + أخطاء + اشتباه", inline=False)
+    embed.set_footer(text="!لوق الموقع delete لحذف النظام")
+    await ctx.send(embed=embed)
+
+
+@log_web.command(name="setup", aliases=["إنشاء"])
+@commands.has_permissions(administrator=True)
+async def log_web_setup(ctx):
+    """!لوق الموقع setup — إنشاء قناة LOG WEB وربط الموقع"""
+    guild = ctx.guild
+
+    existing = webhook_log_channels.get(guild.id)
+    if existing:
+        ch = guild.get_channel(existing["channel_id"])
+        if ch:
+            await ctx.send(f"⚠️ **نظام لوق الموقع مفعل بالفعل.**\nالقناة: {ch.mention}\nاستخدم `!لوق الموقع delete` أولاً.")
+            return
+
+    if not guild.me.guild_permissions.manage_channels:
+        await ctx.send("❌ البوت يحتاج صلاحية **Manage Channels**.")
+        return
+
+    if not guild.me.guild_permissions.manage_webhooks:
+        await ctx.send("❌ البوت يحتاج صلاحية **Manage Webhooks**.")
+        return
+
+    msg = await ctx.send("⏳ **جاري إنشاء قناة LOG WEB...**")
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False, embed_links=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True, manage_webhooks=True, manage_channels=True),
+    }
+
+    try:
+        ch = await guild.create_text_channel(
+            name="LOG WEB",
+            overwrites=overwrites,
+            topic="🌐 سجل أحداث الموقع — معلومات، أخطاء، اشتباه",
+        )
+    except discord.Forbidden:
+        await msg.edit(content="❌ **فشل إنشاء القناة.** البوت لا يملك صلاحية كافية.")
+        return
+    except Exception as e:
+        await msg.edit(content=f"❌ **خطأ:** {e}")
+        return
+
+    await msg.edit(content="✅ **تم إنشاء القناة.** ⏳ جاري إنشاء Webhook...")
+
+    try:
+        webhook = await ch.create_webhook(
+            name="MAX BOT — Web Log",
+            reason="Webhook لنظام لوق الموقع",
+        )
+    except discord.Forbidden:
+        await msg.edit(content="❌ **فشل إنشاء Webhook.** البوت لا يملك صلاحية Manage Webhooks.")
+        await ch.delete()
+        return
+    except Exception as e:
+        await msg.edit(content=f"❌ **خطأ في إنشاء Webhook:** {e}")
+        await ch.delete()
+        return
+
+    webhook_url = webhook.url
+
+    await msg.edit(content="✅ **تم إنشاء Webhook.** ⏳ جاري الحفظ في قاعدة البيانات...")
+
+    try:
+        await save_webhook_url(webhook_url)
+        webhook_log_channels[guild.id] = {"channel_id": ch.id, "webhook_url": webhook_url}
+        save_data()
+
+        embed = discord.Embed(
+            title="✅  تم إعداد نظام لوق الموقع",
+            description=f"📡 القناة: {ch.mention}\n🔗 Webhook: ✅ متصل\n📋 الأحداث: معلومات، أخطاء، اشتباه",
+            color=0x2ECC71,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="🤖 البوت", value="● 🟢 شغال", inline=True)
+        embed.add_field(name="🌍 الموقع", value=f"● 🟢 شغال", inline=True)
+        embed.add_field(name="📊 آخر فحص", value=f"✅ كل الأحداث ترسل لقناة LOG WEB", inline=False)
+        embed.set_footer(text="بسم الله • تم الإعداد بنجاح")
+
+        await msg.edit(content=None, embed=embed)
+    except Exception as e:
+        await ch.delete()
+        await msg.edit(content=f"❌ **فشل الحفظ:** {e}")
+        return
+
+
+@log_web.command(name="delete", aliases=["حذف"])
+@commands.has_permissions(administrator=True)
+async def log_web_delete(ctx):
+    """!لوق الموقع delete — حذف قناة LOG WEB وقطع الربط"""
+    guild = ctx.guild
+    config = webhook_log_channels.pop(guild.id, None)
+
+    if config:
+        ch = guild.get_channel(config["channel_id"])
+        if ch:
+            try:
+                await ch.delete()
+            except:
+                pass
+
+    try:
+        await delete_webhook_url()
+    except:
+        pass
+
+    save_data()
+    await ctx.send("✅ **تم حذف نظام لوق الموقع.**\nتم حذف القناة وقطع الربط مع قاعدة البيانات.")
+
+
+# ════════════════════════════════════════
+# حفظ وتحميل webhook_log_channels
+# ════════════════════════════════════════
+
+def _save_webhook_channels():
+    try:
+        data = load_data()
+        data["webhook_log_channels"] = {str(k): v for k, v in webhook_log_channels.items()}
+        save_data()
+    except:
+        pass
+
+
+def _load_webhook_channels():
+    try:
+        data = load_data()
+        raw = data.get("webhook_log_channels", {})
+        return {int(k): v for k, v in raw.items()}
+    except:
+        return {}
+
+
+# ════════════════════════════════════════
 
 try:
     bot.run(DISCORD_TOKEN)

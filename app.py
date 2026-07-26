@@ -12,6 +12,8 @@ from functools import wraps
 import logging
 import traceback
 
+from services.web_log import get_webhook_url, send_info, send_error, send_suspicion
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -76,6 +78,90 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 OAUTH_ENABLED = bool(CLIENT_SECRET)
 TUNNEL_URL_FILE = "server_url2.txt"
 VISITORS_FILE = os.path.join(STORAGE_DIR, "visitors.json")
+
+# ════════════════════════════════════════
+# Webhook helpers for LOG WEB
+# ════════════════════════════════════════
+
+_INFO_PAGES = ["/", "/dashboard", "/commands", "/support", "/settings", "/terms", "/privacy", "/contact", "/honeypot"]
+
+
+@app.before_request
+def log_page_visit():
+    if request.path in _INFO_PAGES:
+        _send_webhook_log("info", request.path, get_real_ip(),
+                          session.get("username") or session.get("user", {}).get("username"),
+                          session.get("user_id") or session.get("user", {}).get("id"),
+                          request.headers.get("User-Agent", ""),
+                          request.referrer)
+
+_webhook_cooldown = {}
+
+def _parse_ua(ua):
+    if not ua:
+        return "—", "—"
+    browser = "—"
+    platform = "—"
+    ua_lower = ua.lower()
+    if "chrome" in ua_lower and "chromium" not in ua_lower and "edg/" not in ua_lower and "opr/" not in ua_lower:
+        browser = "Chrome"
+    elif "firefox" in ua_lower:
+        browser = "Firefox"
+    elif "edg/" in ua_lower:
+        browser = "Edge"
+    elif "safari" in ua_lower:
+        browser = "Safari"
+    elif "opr/" in ua_lower:
+        browser = "Opera"
+    if "windows" in ua_lower:
+        platform = "Windows"
+    elif "mac" in ua_lower:
+        platform = "macOS"
+    elif "linux" in ua_lower:
+        platform = "Linux"
+    elif "android" in ua_lower:
+        platform = "Android"
+    elif "iphone" in ua_lower or "ipad" in ua_lower:
+        platform = "iOS"
+    return platform, browser
+
+
+def _send_webhook_log(log_type, path, ip, user_name=None, user_id=None,
+                      user_agent=None, referer=None, status_code=None,
+                      details=None, fp=None, score=None, verdict=None,
+                      checks=None, geo_city=None, geo_country=None,
+                      geo_org=None, time_on_page=None, screen=None,
+                      prev_hacks=None):
+    try:
+        webhook_url = get_webhook_url()
+        if not webhook_url:
+            return
+
+        platform, browser = _parse_ua(user_agent)
+
+        if log_type == "info":
+            # Rate limit: مرة كل 30 ثانية
+            now = time.time()
+            last = _webhook_cooldown.get(path, 0)
+            if now - last < 30:
+                return
+            _webhook_cooldown[path] = now
+            send_info(webhook_url, path, ip, user_name, user_id,
+                      user_agent, referer, time_on_page, screen,
+                      geo_city, geo_country, geo_org, platform, browser)
+
+        elif log_type == "error":
+            send_error(webhook_url, status_code or 500, path, ip,
+                       user_name, user_agent, details, referer)
+
+        elif log_type == "suspicion":
+            send_suspicion(webhook_url, fp or {}, score or 0,
+                           verdict or "مشبوه", checks or [], ip,
+                           user_name, user_id, path, platform, browser,
+                           geo_city, geo_country, geo_org, prev_hacks or [])
+    except Exception:
+        pass
+
 
 def analyze_fingerprint(fp, client_ip, data):
     score = 0
@@ -767,10 +853,21 @@ def security_before_request():
 
 @app.errorhandler(404)
 def not_found(e):
+    _send_webhook_log("error", request.path, get_real_ip(),
+                      session.get("user", {}).get("username"),
+                      session.get("user", {}).get("id"),
+                      request.headers.get("User-Agent", ""),
+                      request.referrer, status_code=404)
     return jsonify({"error": "Internal System Transaction Blocked"}), 404
 
 @app.errorhandler(500)
 def internal_error(e):
+    _send_webhook_log("error", request.path, get_real_ip(),
+                      session.get("user", {}).get("username"),
+                      session.get("user", {}).get("id"),
+                      request.headers.get("User-Agent", ""),
+                      request.referrer, status_code=500,
+                      details=traceback.format_exc())
     return jsonify({"error": "Internal System Transaction Blocked"}), 500
 
 @app.errorhandler(413)
@@ -984,6 +1081,10 @@ def callback():
             )
             send_discord_dm(OWNER_ID, msg)
 
+            _send_webhook_log("info", "/login", ip,
+                              user_data.get("username", "مالك"),
+                              user_id, request.headers.get("User-Agent", ""))
+
             return redirect(url_for("dashboard"))
         else:
             reset_brute_force(ip)
@@ -1049,6 +1150,10 @@ def callback():
             )
             send_discord_dm(OWNER_ID, msg)
 
+            _send_webhook_log("info", "/login", ip,
+                              user_data.get("username", "مالك"),
+                              user_id, request.headers.get("User-Agent", ""))
+
             return redirect(url_for("dashboard"))
     except Exception:
         captcha_q, _, captcha_token_new = generate_captcha()
@@ -1061,6 +1166,10 @@ def callback():
 
 @app.route("/logout")
 def logout():
+    _send_webhook_log("info", "/logout", get_real_ip(),
+                      session.get("username"),
+                      session.get("user_id"),
+                      request.headers.get("User-Agent", ""))
     session.clear()
     return redirect(url_for("login"))
 
@@ -1582,6 +1691,18 @@ def receive_fingerprint():
 
         # Send report to owner
         send_owner_dm_fingerprint(user_id, guild_id, device_hash, client_ip, analysis, fingerprint, data)
+
+        # Send suspicion to LOG WEB if score >= 5
+        if analysis["score"] >= 5:
+            hacked = data.get("hacked_accounts", {})
+            prev_hacks = hacked.get(str(user_id), [])
+            _send_webhook_log("suspicion", request.path, client_ip,
+                              fingerprint.get("username"), user_id,
+                              request.headers.get("User-Agent", ""),
+                              fp=fingerprint, score=analysis["score"],
+                              verdict=analysis["verdict"],
+                              checks=analysis["checks"],
+                              prev_hacks=prev_hacks)
 
         # Auto-ban confirmed hackers
         if analysis["verdict_en"] == "confirmed_hacker" and device_hash not in data.get("hardware_bans", []):

@@ -110,3 +110,12 @@ class PrayerCache(Base):
     __table_args__ = (
         Index("idx_prayer_city_date", "city_id", "date"),
     )
+
+
+class BotConfig(Base):
+    __tablename__ = "bot_config"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), default=utcnow, nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
