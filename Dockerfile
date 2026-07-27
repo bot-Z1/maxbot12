@@ -1,7 +1,6 @@
 FROM python:3.10-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
     gcc \
     python3-dev \
     ffmpeg \
@@ -9,8 +8,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-RUN pip install --no-cache-dir git+https://github.com/python-adhan/adhan-python.git
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

@@ -10,5 +10,6 @@ imageio-ffmpeg
 asyncpg>=0.30
 pytz>=2024
 alembic>=1.13
+adhan>=0.1.0
 sqlalchemy>=2.0
 psycopg2-binary>=2.9
